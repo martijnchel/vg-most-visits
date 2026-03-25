@@ -5,6 +5,9 @@ const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL; 
 
+// TEST MODUS: Zet op false als je echt wilt gaan verzenden
+const DRY_RUN = true; 
+
 const MIN_VISITS = 15; 
 const MAX_VISITS = 18; 
 const RECENT_DAYS = 4; 
@@ -19,7 +22,7 @@ function formatPhone(phone) {
 }
 
 async function runReviewBot() {
-    console.log(`Scan gestart: Leden met ${MIN_VISITS}-${MAX_VISITS} bezoeken in laatste 90 dagen...`);
+    console.log(`[${DRY_RUN ? 'TEST-MODUS' : 'LIVE-MODUS'}] Scan start...`);
     const timestamp = Date.now() - (90 * 24 * 60 * 60 * 1000);
 
     try {
@@ -44,33 +47,28 @@ async function runReviewBot() {
             return count >= MIN_VISITS && count <= MAX_VISITS && lastVisitTimestamp[id] > recentThreshold;
         });
         
-        console.log(`Aantal kandidaten in trigger-zone: ${candidates.length}`);
+        console.log(`Totaal gevonden in Virtuagym: ${visits.length} check-ins.`);
+        console.log(`Aantal matches voor review (15-18 bezoeken): ${candidates.length}`);
 
-        // Max 5 per run om spreiding te houden
-        const batch = candidates.slice(0, 5);
-
-        for (const memberId of batch) {
+        for (const memberId of candidates.slice(0, 10)) { // Toon er max 10 in de logs
             const mRes = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member/${memberId}`, {
                 params: { api_key: API_KEY, club_secret: CLUB_SECRET }
             });
             const member = mRes.data.result[0] || mRes.data.result;
 
-            if (member && (member.mobile || member.phone)) {
-                const formattedPhone = formatPhone(member.mobile || member.phone);
-                if (formattedPhone) {
-                    await axios.post(MAKE_WEBHOOK_URL, {
-                        telefoon: formattedPhone,
-                        voornaam: member.firstname
-                    });
-                    console.log(`Bericht getriggerd voor: ${member.firstname}`);
+            if (member) {
+                const phone = formatPhone(member.mobile || member.phone);
+                console.log(`> KANDIDAAT: ${member.firstname} ${member.lastname || ''} | Bezoeken: ${counts[memberId]} | Tel: ${phone}`);
+                
+                if (!DRY_RUN && phone && MAKE_WEBHOOK_URL) {
+                    await axios.post(MAKE_WEBHOOK_URL, { telefoon: phone, voornaam: member.firstname });
+                    console.log(`  [VERSTUURD NAAR MAKE]`);
                     await new Promise(r => setTimeout(r, 1000));
                 }
             }
         }
-        console.log("Bot run succesvol afgerond.");
-    } catch (e) {
-        console.error("Fout tijdens run:", e.message);
-    }
+        console.log("Scan voltooid.");
+    } catch (e) { console.error("Fout:", e.message); }
 }
 
 runReviewBot();
