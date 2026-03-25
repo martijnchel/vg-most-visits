@@ -8,8 +8,8 @@ const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const DRY_RUN = false; 
 
 // CONFIGURATIE
-const TRIGGER_MIN = 15; // De unieke triggerwaarde
-const TRIGGER_MAX = 16; // Margerandje voor als ze 2x vlak achter elkaar komen
+const TRIGGER_MIN = 15; 
+const TRIGGER_MAX = 16; 
 const RECENT_WINDOW_DAYS = 90; 
 const ACTIVE_CHECK_DAYS = 3;   
 const MAX_CANDIDATES_PER_RUN = 5;
@@ -17,27 +17,36 @@ const START_DATE_BOT = new Date('2024-03-01T00:00:00').getTime();
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Aangepaste functie voor WhatsApp format met +
 function formatPhone(phone) {
     if (!phone) return null;
     let cleaned = phone.replace(/\D/g, ''); 
     if (cleaned.startsWith('00')) cleaned = cleaned.substring(2);
     if (cleaned.startsWith('0') && !cleaned.startsWith('00')) cleaned = '31' + cleaned.substring(1);
     if (!cleaned.startsWith('31')) cleaned = '31' + cleaned;
-    return cleaned;
+    
+    // Voeg de verplichte + toe voor de WhatsApp module
+    return '+' + cleaned;
 }
 
 async function waitUntilTenAM() {
     const now = new Date();
     const tenAM = new Date();
     tenAM.setHours(10, 0, 0, 0);
-    if (now > tenAM) return;
+
+    // Als het al na 10:00 is (bijv. bij handmatige start), gaan we direct door
+    if (now > tenAM) {
+        console.log("[TIMER] Het is al na 10:00 uur, we starten direct met verzenden.");
+        return;
+    }
+
     const msToWait = tenAM - now;
-    console.log(`[TIMER] Wachten tot 10:00 uur...`);
+    console.log(`[TIMER] Scan klaar. We wachten ${Math.round(msToWait/60000)} minuten tot het 10:00 uur is...`);
     await sleep(msToWait);
 }
 
 async function runReviewBot() {
-    console.log(`--- [START] NACHT-SCAN (Eénmalige trigger na 1 maart) ---`);
+    console.log(`--- [START] NACHT-SCAN (Met +31 format) ---`);
     const timestamp90DaysAgo = Date.now() - (RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     const timestampActiveRecent = Date.now() - (ACTIVE_CHECK_DAYS * 24 * 60 * 60 * 1000);
 
@@ -48,6 +57,8 @@ async function runReviewBot() {
 
         const activeIds = [...new Set((res.data.result || []).map(v => v.member_id))];
         const candidates = [];
+
+        console.log(`Checken van ${activeIds.length} actieve leden...`);
 
         for (let i = 0; i < activeIds.length; i++) {
             const memberId = activeIds[i];
@@ -60,15 +71,15 @@ async function runReviewBot() {
                 const totalSinceMarch = allVisits.length;
                 const visitsInLast90Days = allVisits.filter(v => v.check_in_timestamp > timestamp90DaysAgo).length;
 
-                // DE CRUCIALE CHECK:
-                // 1. Totaal sinds 1 maart is precies 15 of 16 (zorgt voor éénmalig bericht)
-                // 2. Tempo in de laatste 90 dagen is ook 15+ (zorgt dat het een actieve sporter is)
                 if (totalSinceMarch >= TRIGGER_MIN && totalSinceMarch <= TRIGGER_MAX && visitsInLast90Days >= 15) {
                     candidates.push({ id: memberId, count: totalSinceMarch });
-                    console.log(`[MATCH] Lid ${memberId} tikt de 15 aan sinds 1 maart!`);
+                    console.log(`   [MATCH] Lid ${memberId} gevonden (${totalSinceMarch} bezoeken totaal).`);
                 }
             } catch (err) {
-                if (err.response && err.response.status === 429) { await sleep(120000); i--; continue; }
+                if (err.response && err.response.status === 429) { 
+                    console.log("Rate limit! 2 min rust...");
+                    await sleep(120000); i--; continue; 
+                }
             }
             await sleep(15000); 
             if (candidates.length >= MAX_CANDIDATES_PER_RUN) break;
@@ -81,15 +92,22 @@ async function runReviewBot() {
                     params: { api_key: API_KEY, club_secret: CLUB_SECRET }
                 });
                 const member = Array.isArray(mRes.data.result) ? mRes.data.result[0] : mRes.data.result;
+                
                 if (member && MAKE_WEBHOOK_URL) {
                     const phone = formatPhone(member.mobile || member.phone);
-                    await axios.post(MAKE_WEBHOOK_URL, { telefoon: phone, voornaam: member.firstname, bezoeken: cand.count });
-                    console.log(`> Verzonden: ${member.firstname}`);
-                    await sleep(5000);
+                    if (phone) {
+                        console.log(`> Verzenden naar Make: ${member.firstname} (${phone})`);
+                        await axios.post(MAKE_WEBHOOK_URL, {
+                            telefoon: phone,
+                            voornaam: member.firstname,
+                            bezoeken: cand.count
+                        });
+                        await sleep(5000); 
+                    }
                 }
             }
         }
-        console.log("--- KLAAR ---");
+        console.log("--- SCAN VOLTOOID ---");
     } catch (e) { console.error("Fout:", e.message); }
 }
 
