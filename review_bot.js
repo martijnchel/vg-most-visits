@@ -5,10 +5,9 @@ const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL; 
 
-// CONFIGURATIE
-const MIN_VISITS = 15; // Trigger vanaf 15 bezoeken
-const MAX_VISITS = 18; // Stop met triggeren na 18 (om dubbele apps te voorkomen)
-const RECENT_DAYS = 4; // Moet in de afgelopen 4 dagen nog zijn geweest
+const MIN_VISITS = 15; 
+const MAX_VISITS = 18; 
+const RECENT_DAYS = 4; 
 
 function formatPhone(phone) {
     if (!phone) return null;
@@ -20,9 +19,7 @@ function formatPhone(phone) {
 }
 
 async function runReviewBot() {
-    console.log(`Zoeken naar leden met ${MIN_VISITS} tot ${MAX_VISITS} bezoeken...`);
-    
-    // Timestamp van 90 dagen geleden
+    console.log(`Scan gestart: Leden met ${MIN_VISITS}-${MAX_VISITS} bezoeken in laatste 90 dagen...`);
     const timestamp = Date.now() - (90 * 24 * 60 * 60 * 1000);
 
     try {
@@ -42,17 +39,14 @@ async function runReviewBot() {
         });
 
         const recentThreshold = Date.now() - (RECENT_DAYS * 24 * 60 * 60 * 1000);
-        
         const candidates = Object.keys(counts).filter(id => {
             const count = counts[id];
-            const lastVisit = lastVisitTimestamp[id];
-            // Filter: Zit tussen 15-18 bezoeken EN was er onlangs nog
-            return count >= MIN_VISITS && count <= MAX_VISITS && lastVisit > recentThreshold;
+            return count >= MIN_VISITS && count <= MAX_VISITS && lastVisitTimestamp[id] > recentThreshold;
         });
         
-        console.log(`Kandidaten gevonden: ${candidates.length}`);
+        console.log(`Aantal kandidaten in trigger-zone: ${candidates.length}`);
 
-        // We beperken het tot max 5 per run om Make/WhatsApp niet te overbelasten
+        // Max 5 per run om spreiding te houden
         const batch = candidates.slice(0, 5);
 
         for (const memberId of batch) {
@@ -68,14 +62,14 @@ async function runReviewBot() {
                         telefoon: formattedPhone,
                         voornaam: member.firstname
                     });
-                    console.log(`Gestuurd naar Make: ${member.firstname} (${formattedPhone})`);
+                    console.log(`Bericht getriggerd voor: ${member.firstname}`);
                     await new Promise(r => setTimeout(r, 1000));
                 }
             }
         }
-        console.log("Klaar!");
+        console.log("Bot run succesvol afgerond.");
     } catch (e) {
-        console.error("Fout:", e.message);
+        console.error("Fout tijdens run:", e.message);
     }
 }
 
