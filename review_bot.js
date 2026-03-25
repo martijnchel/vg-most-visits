@@ -1,25 +1,14 @@
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
-// Configuraties
 const CLUB_ID = process.env.CLUB_ID;
 const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL; 
 
-// Database pad voor Railway Volume
-const DB_DIR = '/app/data';
-const DB_FILE = path.join(DB_DIR, 'sent_reviews.json');
-
-const MIN_VISITS = 20; 
-const MAX_MESSAGES_PER_RUN = 5; 
-
-// Zorg dat de directory bestaat (voor Railway Volume)
-if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify([]));
-
-let sentList = JSON.parse(fs.readFileSync(DB_FILE));
+// CONFIGURATIE
+const MIN_VISITS = 15; // Trigger vanaf 15 bezoeken
+const MAX_VISITS = 18; // Stop met triggeren na 18 (om dubbele apps te voorkomen)
+const RECENT_DAYS = 4; // Moet in de afgelopen 4 dagen nog zijn geweest
 
 function formatPhone(phone) {
     if (!phone) return null;
@@ -31,7 +20,9 @@ function formatPhone(phone) {
 }
 
 async function runReviewBot() {
-    console.log("Review Bot start...");
+    console.log(`Zoeken naar leden met ${MIN_VISITS} tot ${MAX_VISITS} bezoeken...`);
+    
+    // Timestamp van 90 dagen geleden
     const timestamp = Date.now() - (90 * 24 * 60 * 60 * 1000);
 
     try {
@@ -41,15 +32,30 @@ async function runReviewBot() {
 
         const visits = response.data.result || [];
         const counts = {};
-        visits.forEach(v => { counts[v.member_id] = (counts[v.member_id] || 0) + 1; });
+        const lastVisitTimestamp = {};
 
-        const candidates = Object.keys(counts).filter(id => counts[id] >= MIN_VISITS && !sentList.includes(id));
+        visits.forEach(v => { 
+            counts[v.member_id] = (counts[v.member_id] || 0) + 1;
+            if (!lastVisitTimestamp[v.member_id] || v.check_in_timestamp > lastVisitTimestamp[v.member_id]) {
+                lastVisitTimestamp[v.member_id] = v.check_in_timestamp;
+            }
+        });
+
+        const recentThreshold = Date.now() - (RECENT_DAYS * 24 * 60 * 60 * 1000);
+        
+        const candidates = Object.keys(counts).filter(id => {
+            const count = counts[id];
+            const lastVisit = lastVisitTimestamp[id];
+            // Filter: Zit tussen 15-18 bezoeken EN was er onlangs nog
+            return count >= MIN_VISITS && count <= MAX_VISITS && lastVisit > recentThreshold;
+        });
+        
         console.log(`Kandidaten gevonden: ${candidates.length}`);
 
-        let processed = 0;
-        for (const memberId of candidates) {
-            if (processed >= MAX_MESSAGES_PER_RUN) break;
+        // We beperken het tot max 5 per run om Make/WhatsApp niet te overbelasten
+        const batch = candidates.slice(0, 5);
 
+        for (const memberId of batch) {
             const mRes = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member/${memberId}`, {
                 params: { api_key: API_KEY, club_secret: CLUB_SECRET }
             });
@@ -62,16 +68,15 @@ async function runReviewBot() {
                         telefoon: formattedPhone,
                         voornaam: member.firstname
                     });
-                    sentList.push(memberId);
-                    processed++;
-                    console.log(`Webhook verstuurd: ${member.firstname}`);
-                    await new Promise(r => setTimeout(r, 2000));
+                    console.log(`Gestuurd naar Make: ${member.firstname} (${formattedPhone})`);
+                    await new Promise(r => setTimeout(r, 1000));
                 }
             }
         }
-        fs.writeFileSync(DB_FILE, JSON.stringify(sentList));
-        console.log("Run voltooid.");
-    } catch (e) { console.error("Fout:", e.message); }
+        console.log("Klaar!");
+    } catch (e) {
+        console.error("Fout:", e.message);
+    }
 }
 
 runReviewBot();
