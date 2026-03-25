@@ -1,4 +1,5 @@
 {
+  "$schema": "https://railway.app/railway.schema.json",
   "deploy": {
     "startCommand": "node review_bot.js",
     "restartPolicyOnFailure": "on-failure",
