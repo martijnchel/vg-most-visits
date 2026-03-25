@@ -5,7 +5,7 @@ const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL; 
 
-// TEST-MODUS: Staat op true voor de webhook-test
+// TEST-MODUS: Staat op true voor de veiligheid. Zet op false om echt te gaan verzenden.
 const DRY_RUN = true; 
 
 // CONFIGURATIE
@@ -13,7 +13,6 @@ const MIN_VISITS = 15;
 const MAX_VISITS = 16; 
 const RECENT_DAYS = 7; 
 
-// Functie om te wachten (ms)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function formatPhone(phone) {
@@ -26,7 +25,9 @@ function formatPhone(phone) {
 }
 
 async function runReviewBot() {
-    console.log(`--- [${DRY_RUN ? 'TEST-MODE' : 'LIVE-MODE'}] START SCAN (TRAAG TEMPO) ---`);
+    console.log(`--- [${DRY_RUN ? 'TEST-MODE' : 'LIVE-MODE'}] START SCAN ---`);
+    console.log(`Gepland tijdstip: Maandag & Donderdag 14:30 uur.`);
+    
     const timestampRecent = Date.now() - (RECENT_DAYS * 24 * 60 * 60 * 1000); 
 
     try {
@@ -42,7 +43,7 @@ async function runReviewBot() {
         const candidates = [];
         const timestamp90Days = Date.now() - (90 * 24 * 60 * 60 * 1000);
 
-        console.log(`Stap 2: Historie checken voor ${uniqueMemberIds.length} leden. Geschatte duur: ${Math.round((uniqueMemberIds.length * 2) / 60)} minuten...`);
+        console.log(`Stap 2: Analyse van ${uniqueMemberIds.length} leden. Dit duurt ongeveer ${Math.round((uniqueMemberIds.length * 2) / 60)} minuten.`);
 
         for (let i = 0; i < uniqueMemberIds.length; i++) {
             const memberId = uniqueMemberIds[i];
@@ -58,7 +59,7 @@ async function runReviewBot() {
                 }
             } catch (err) {
                 if (err.response && err.response.status === 429) {
-                    console.log("Rate limit nog steeds geraakt. We pauzeren 30 seconden...");
+                    console.log("Rate limit geraakt. We wachten 30 seconden...");
                     await sleep(30000); 
                     i--; 
                     continue;
@@ -66,17 +67,16 @@ async function runReviewBot() {
                 console.error(`Fout bij lid ${memberId}:`, err.message);
             }
 
-            // Wacht 2 seconden tussen elke persoon
-            await sleep(2000); 
+            await sleep(2000); // 2 seconden pauze per lid
             
             if (i % 10 === 0 && i > 0) {
-                console.log(`Voortgang: ${i}/${uniqueMemberIds.length} leden geanalyseerd...`);
+                console.log(`Voortgang: ${i}/${uniqueMemberIds.length} leden verwerkt...`);
             }
         }
         
-        console.log(`Gevonden kandidaten: ${candidates.length}`);
+        console.log(`Klaar met analyse. Gevonden kandidaten (15-16 bezoeken): ${candidates.length}`);
 
-        // STAP 3: DATA STRUCTURE TEST & VERZENDING
+        // STAP 3: VERZENDING
         if (candidates.length > 0) {
             for (let j = 0; j < Math.min(candidates.length, 5); j++) {
                 const cand = candidates[j];
@@ -87,15 +87,16 @@ async function runReviewBot() {
 
                 if (member) {
                     const phone = formatPhone(member.mobile || member.phone);
-                    // Altijd de eerste sturen voor de Make test, rest alleen in LIVE
+                    // In DRY_RUN sturen we alleen de eerste voor de Make test
                     if (j === 0 || !DRY_RUN) {
-                        console.log(`> VERZENDEN: ${member.firstname} (Bezoeken: ${cand.count})`);
-                        await axios.post(MAKE_WEBHOOK_URL, {
-                            telefoon: phone,
-                            voornaam: member.firstname,
-                            bezoeken: cand.count,
-                            member_id: cand.id
-                        });
+                        console.log(`> VERSTUREN: ${member.firstname} (Tel: ${phone})`);
+                        if (MAKE_WEBHOOK_URL) {
+                            await axios.post(MAKE_WEBHOOK_URL, {
+                                telefoon: phone,
+                                voornaam: member.firstname,
+                                bezoeken: cand.count
+                            });
+                        }
                         await sleep(2000);
                     } else {
                         console.log(`> MATCH (Dry-run): ${member.firstname} | Bezoeken: ${cand.count}`);
@@ -105,7 +106,7 @@ async function runReviewBot() {
         }
 
         console.log("--- SCAN VOLTOOID ---");
-    } catch (e) { console.error("KRITIEKE FOUT:", e.message); }
+    } catch (e) { console.error("Fout in script:", e.message); }
 }
 
 runReviewBot();
