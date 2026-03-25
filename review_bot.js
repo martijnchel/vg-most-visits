@@ -5,13 +5,19 @@ const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL; 
 
-// TEST-MODUS: Staat op true. Alleen de allereerste match gaat naar Make voor de test.
-const DRY_RUN = true; 
+const DRY_RUN = false; 
 
 // CONFIGURATIE
 const MIN_VISITS = 15; 
 const MAX_VISITS = 16; 
 const RECENT_DAYS = 3; 
+const MAX_CANDIDATES_PER_RUN = 5;
+
+// STARTPUNT: 1 Maart 2024
+const START_DATE_BOT = new Date('2024-03-01T00:00:00').getTime();
+
+// 12 seconden pauze = 300 requests per uur (zeer veilig voor de 500-limiet)
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function formatPhone(phone) {
     if (!phone) return null;
@@ -23,102 +29,76 @@ function formatPhone(phone) {
 }
 
 async function runReviewBot() {
-    console.log(`--- [TURBO-MODE] START SCAN (Grote Volumes) ---`);
-    
-    const timestamp90Days = Date.now() - (90 * 24 * 60 * 60 * 1000);
+    console.log(`--- [NIGHT-SCAN] START (Vanaf 1 maart 2024) ---`);
     const timestampRecent = Date.now() - (RECENT_DAYS * 24 * 60 * 60 * 1000);
 
     try {
-        let allVisits = [];
-        let offset = 0;
-        let fetchMore = true;
+        console.log(`Stap 1: Actieve leden ophalen...`);
+        const res = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`, {
+            params: { api_key: API_KEY, club_secret: CLUB_SECRET, sync_from: timestampRecent, limit: 1000 }
+        });
 
-        console.log("Stap 1: Alle check-ins ophalen (90 dagen historie)...");
+        const recentVisits = res.data.result || [];
+        const uniqueMemberIds = [...new Set(recentVisits.map(v => v.member_id))];
+        
+        console.log(`Analyse van ${uniqueMemberIds.length} leden start nu.`);
 
-        // We blijven ophalen tot we alles hebben (max 25.000 records voor de veiligheid)
-        while (fetchMore && offset < 25000) {
-            const res = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`, {
-                params: { 
-                    api_key: API_KEY, 
-                    club_secret: CLUB_SECRET, 
-                    sync_from: timestamp90Days,
-                    limit: 1000,
-                    offset: offset
-                }
-            });
+        const candidates = [];
 
-            const v = res.data.result || [];
-            allVisits = allVisits.concat(v);
+        for (let i = 0; i < uniqueMemberIds.length; i++) {
+            const memberId = uniqueMemberIds[i];
             
-            console.log(`   Voortgang: ${allVisits.length} records opgehaald...`);
+            try {
+                const historyRes = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`, {
+                    params: { 
+                        api_key: API_KEY, 
+                        club_secret: CLUB_SECRET, 
+                        member_id: memberId,
+                        sync_from: START_DATE_BOT 
+                    }
+                });
 
-            if (v.length < 1000) {
-                fetchMore = false;
-            } else {
-                offset += 1000;
-                // Korte pauze om VG API te respecteren
-                await new Promise(r => setTimeout(r, 1000));
+                const count = (historyRes.data.result || []).length;
+                
+                if (count >= MIN_VISITS && count <= MAX_VISITS) {
+                    candidates.push({ id: memberId, count: count });
+                    console.log(`Match gevonden: Lid ${memberId} (Bezoeken: ${count})`);
+                }
+            } catch (err) {
+                console.error(`Fout bij lid ${memberId}:`, err.message);
+                if (err.response && err.response.status === 429) {
+                    await sleep(60000); // 1 minuut extra pauze bij 429
+                    i--; continue;
+                }
             }
+
+            await sleep(12000); // 12 sec pauze tussen elk lid
+
+            if (candidates.length >= MAX_CANDIDATES_PER_RUN) break;
         }
 
-        console.log(`Totaal aantal check-ins in geheugen: ${allVisits.length}`);
-
-        // Stap 2: Tellen en laatste bezoek vastleggen
-        const counts = {};
-        const lastVisit = {};
-
-        allVisits.forEach(v => {
-            const id = v.member_id;
-            counts[id] = (counts[id] || 0) + 1;
-            // Update laatste bezoek timestamp
-            if (!lastVisit[id] || v.check_in_timestamp > lastVisit[id]) {
-                lastVisit[id] = v.check_in_timestamp;
-            }
-        });
-
-        // Stap 3: Filteren
-        const candidates = Object.keys(counts).filter(id => {
-            return counts[id] >= MIN_VISITS && 
-                   counts[id] <= MAX_VISITS && 
-                   lastVisit[id] > timestampRecent;
-        });
-
-        console.log(`Stap 2: Analyse voltooid. ${candidates.length} kandidaten gevonden.`);
-
-        // Stap 4: Details ophalen en verzenden (max 5 per run)
-        const batch = candidates.slice(0, 5);
-        for (let i = 0; i < batch.length; i++) {
-            const memberId = batch[i];
-            const mRes = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member/${memberId}`, {
+        // Stap 3: Verzenden naar Make
+        for (const cand of candidates) {
+            const mRes = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member/${cand.id}`, {
                 params: { api_key: API_KEY, club_secret: CLUB_SECRET }
             });
-            
             const member = Array.isArray(mRes.data.result) ? mRes.data.result[0] : mRes.data.result;
 
             if (member) {
                 const phone = formatPhone(member.mobile || member.phone);
-                console.log(`> MATCH: ${member.firstname} (Totaal: ${counts[memberId]})`);
-                
-                // Stuur alleen de eerste in DRY_RUN, of alles in LIVE-MODE
-                if (i === 0 || !DRY_RUN) {
-                    if (MAKE_WEBHOOK_URL && phone) {
-                        console.log(`  [WEBHOOK] Verzenden voor ${member.firstname}...`);
-                        await axios.post(MAKE_WEBHOOK_URL, {
-                            telefoon: phone,
-                            voornaam: member.firstname,
-                            bezoeken: counts[memberId],
-                            member_id: memberId
-                        });
-                    }
+                if (phone && !DRY_RUN && MAKE_WEBHOOK_URL) {
+                    await axios.post(MAKE_WEBHOOK_URL, {
+                        telefoon: phone,
+                        voornaam: member.firstname,
+                        bezoeken: cand.count
+                    });
+                    console.log(`Data naar Make gestuurd voor: ${member.firstname}`);
                 }
             }
-            await new Promise(r => setTimeout(r, 1000));
+            await sleep(2000);
         }
-
-        console.log("--- SCAN VOLTOOID ---");
-    } catch (e) {
-        console.error("Fout tijdens Turbo-scan:", e.message);
-    }
+        console.log("--- NACHT-SCAN VOLTOOID ---");
+    } catch (e) { console.error("Fout:", e.message); }
 }
 
 runReviewBot();
