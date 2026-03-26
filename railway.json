@@ -3,6 +3,6 @@
   "deploy": {
     "startCommand": "node review_bot.js",
     "restartPolicyOnFailure": "on-failure",
-    "cron": "0 3 * * 1,4"
+    "cron": "0 3 * * *"
   }
 }
